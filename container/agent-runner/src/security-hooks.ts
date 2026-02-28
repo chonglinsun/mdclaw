@@ -5,7 +5,7 @@ import type { HookCallback, PreToolUseHookInput } from '@anthropic-ai/claude-cod
 // Secrets that must not leak to bash subprocesses spawned by Claude.
 // These are needed by the SDK for API auth but should never be visible
 // to commands the agent runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_API_KEY'];
+const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
 /**
  * Creates a PreToolUse hook that strips secret env vars from every Bash command.

@@ -254,7 +254,7 @@ Each conversation turn runs in an isolated container:
 - **No network persistence.** Containers are ephemeral — started for each message batch, destroyed after.
 - **No host access.** The container sees only mounted directories (`/data`, `/ipc`, `/app`) and stdin/stdout.
 - **Secrets via stdin.** API keys are sent in the `ContainerInput` JSON, never baked into the image. For Apple Container (where `-e` flags are buggy with stdin), secrets are written to a temp file mounted at `/secrets.json`.
-- **Environment sanitization.** Secrets are merged into an isolated `sdkEnv` clone — never written to `process.env`. The SDK receives `sdkEnv` via `options.env` for API authentication. A `PreToolUse` hook on `Bash` prepends `unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN CLAUDE_API_KEY` to every shell command, preventing Claude's bash tool from reading keys even though the SDK process has them.
+- **Environment sanitization.** Secrets are merged into an isolated `sdkEnv` clone — never written to `process.env`. The SDK receives `sdkEnv` via `options.env` for API authentication. A `PreToolUse` hook on `Bash` prepends `unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN` to every shell command, preventing Claude's bash tool from reading keys even though the SDK process has them.
 
 ### Multi-turn conversations
 
