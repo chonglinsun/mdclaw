@@ -54,8 +54,12 @@ This skill creates the bare Node.js + TypeScript project that all subsequent ski
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^11.7.0",
     "cron-parser": "^4.9.0",
+    "discord.js": "^14.0.0",
     "dotenv": "^16.4.7",
+    "googleapis": "^144.0.0",
     "grammy": "^1.39.3",
+    "openai": "^4.0.0",
+    "@slack/bolt": "^3.0.0",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
     "qrcode-terminal": "^0.12.0",
@@ -124,7 +128,40 @@ MAIN_GROUP_FOLDER=main
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_ONLY=false
 
+# Discord (required if using Discord channel)
+DISCORD_BOT_TOKEN=
+
+# Slack (required if using Slack channel)
+SLACK_BOT_TOKEN=
+SLACK_APP_TOKEN=
+
+# Headless/API (required if using Headless channel)
+HEADLESS_PORT=3000
+HEADLESS_SECRET=
+
+# Gmail (required if using Gmail channel)
+GMAIL_CLIENT_ID=
+GMAIL_CLIENT_SECRET=
+GMAIL_REFRESH_TOKEN=
+GMAIL_MODE=channel
+
+# Telegram swarm (optional pool bots for agent teams)
+TELEGRAM_POOL_TOKEN_1=
+TELEGRAM_POOL_TOKEN_2=
+TELEGRAM_POOL_TOKEN_3=
+
+# Voice transcription (OpenAI Whisper)
+WHISPER_API_KEY=
+
+# Web search (Parallel AI)
+PARALLEL_API_KEY=
+
+# X/Twitter (browser automation)
+X_USERNAME=
+X_PASSWORD=
+
 # Optional
+ASSISTANT_HAS_OWN_NUMBER=false
 LOG_LEVEL=info
 CONTAINER_RUNTIME=docker
 ```

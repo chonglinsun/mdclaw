@@ -1,4 +1,4 @@
-// mdclaw agent-runner: security hooks for Claude Agent SDK
+// mdclaw agent-runner: security utilities for subprocess environment
 
 const STRIPPED_ENV_VARS = [
   'ANTHROPIC_API_KEY',
@@ -7,26 +7,9 @@ const STRIPPED_ENV_VARS = [
 ];
 
 /**
- * Creates a hook that strips sensitive environment variables from
- * any Bash subprocess spawned by the Claude Agent SDK.
- * Returns the hook config object to pass to the SDK session.
- */
-export function createSanitizeBashHook() {
-  return {
-    type: 'tool_use' as const,
-    toolName: 'bash',
-    hook: (_input: Record<string, unknown>, env: Record<string, string | undefined>) => {
-      for (const key of STRIPPED_ENV_VARS) {
-        delete env[key];
-      }
-      return { env };
-    },
-  };
-}
-
-/**
  * Sanitizes an environment object by removing sensitive keys.
- * Used when constructing the container process environment.
+ * Pass the result to `query()` via `options.env` to ensure
+ * bash subprocesses spawned by Claude don't inherit API keys.
  */
 export function sanitizeEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
   const cleaned = { ...env };

@@ -186,6 +186,10 @@ interface ChannelRegistration {
 | `createMessageProcessor` | `./message-processor.js` |
 | Channel modules | `./channels/*.js` (dynamic) |
 
+## Personality files
+
+Personality files (`IDENTITY.md`, `SOUL.md`) placed in group data directories are automatically available inside containers at `/data/IDENTITY.md` and `/data/SOUL.md` via the existing data dir mount. No additional mount configuration is needed — the agent-runner reads these at startup and prepends them to the system prompt.
+
 ## Verification
 
 ```bash

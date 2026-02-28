@@ -109,11 +109,13 @@ Follow every behavioral requirement in the `/add-orchestrator` skill spec.
 
 ### Phase 6: Channel selection (interactive)
 
-Ask the user which channels to install:
+Ask the user which channels to install (multiple allowed):
 
 - **WhatsApp** (via Baileys) — requires QR code / pairing code on first run
 - **Telegram** (via Grammy) — requires bot token from @BotFather
-- **Both**
+- **Discord** (via discord.js) — requires bot token from Discord Developer Portal
+- **Slack** (via @slack/bolt) — requires bot token + app token with Socket Mode
+- **Headless/API** (via node:http) — HTTP API for programmatic access, webhooks, custom UIs
 
 Then generate the selected channel(s):
 
@@ -128,6 +130,31 @@ Then generate the selected channel(s):
 - `src/channels/telegram.test.ts`
 - Wire into `src/index.ts`
 - Ask the user for their `TELEGRAM_BOT_TOKEN`
+
+**If Discord selected:** Read `.claude/skills/add-discord/SKILL.md` and create:
+- `src/channels/discord.ts`
+- `src/channels/discord.test.ts`
+- Wire into `src/index.ts`
+- Ask the user for their `DISCORD_BOT_TOKEN`
+
+**If Slack selected:** Read `.claude/skills/add-slack/SKILL.md` and create:
+- `src/channels/slack.ts`
+- `src/channels/slack.test.ts`
+- Wire into `src/index.ts`
+- Ask the user for their `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`
+
+**If Headless selected:** Read `.claude/skills/add-headless/SKILL.md` and the `headless-protocol.md` anchor contract, then create:
+- `src/channels/headless.ts`
+- `src/channels/headless.test.ts`
+- Wire into `src/index.ts`
+- Ask the user for their preferred `HEADLESS_PORT` (default 3000) and `HEADLESS_SECRET`
+
+**If Gmail selected:** Read `.claude/skills/add-gmail/SKILL.md` and create:
+- `src/channels/gmail.ts`
+- `src/channels/gmail.test.ts`
+- Wire into `src/index.ts`
+- Ask the user for their `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`
+- Ask if channel mode (inbound + outbound) or tool mode (outbound only)
 
 ### Phase 7: Install dependencies
 
@@ -194,6 +221,54 @@ These instructions apply to all groups.
 - Schedule tasks for recurring operations
 ```
 
+7. Create personality file templates:
+
+   `${DATA_DIR}/${MAIN_GROUP_FOLDER}/IDENTITY.md`:
+   ```markdown
+   # Identity
+
+   You are Andy, a helpful AI assistant for this group.
+
+   ## Personality
+   - Friendly and approachable
+   - Concise but thorough
+   - Proactive about offering help
+   ```
+
+   `${DATA_DIR}/${MAIN_GROUP_FOLDER}/SOUL.md`:
+   ```markdown
+   # Principles
+
+   ## Communication
+   - Be direct and clear
+   - Adapt tone to the conversation
+   - Use tools proactively when they help
+
+   ## Values
+   - Accuracy over speed
+   - Helpfulness without being intrusive
+   - Respect privacy and security
+   ```
+
+   `${DATA_DIR}/global/IDENTITY.md`:
+   ```markdown
+   # Shared Identity
+
+   These identity traits apply to all groups unless overridden by group-specific IDENTITY.md.
+   ```
+
+   `${DATA_DIR}/global/SOUL.md`:
+   ```markdown
+   # Shared Principles
+
+   These principles apply to all groups unless overridden by group-specific SOUL.md.
+
+   ## Core Values
+   - Be helpful, accurate, and respectful
+   - Use available tools when they add value
+   - Protect user privacy and security
+   ```
+
 ### Phase 11: Build Docker image
 
 ```bash
@@ -209,6 +284,22 @@ npm run build
 ```
 
 Must succeed. Fix any issues.
+
+### Phase 12.5: Generate contract-derived tests
+
+Run the `/generate-tests` skill to produce contract-derived test files. Read `.claude/skills/generate-tests/SKILL.md` and execute it:
+
+1. Create `test/contracts/` and `test/boundary/` directories
+2. Generate 5 test files that verify contract conformance at integration boundaries
+3. Rewrite `test/integration.test.ts` to use real imports instead of inline copies
+
+Then verify:
+
+```bash
+npx vitest run test/contracts/ test/boundary/
+```
+
+All generated tests must pass. If any fail, fix the generated code and re-run.
 
 ### Phase 13: Verification (absorbs /verify)
 

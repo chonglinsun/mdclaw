@@ -93,8 +93,21 @@ interface IpcCommand {
    - Uses `config.CONTAINER_RUNTIME` (default `'docker'`) as the binary
    - All methods spawn the runtime binary with appropriate arguments
 3. Export `AppleContainerRuntime` class implementing `ContainerRuntime`:
-   - Placeholder for future macOS Apple Container support
-   - Methods throw "not implemented" errors
+
+   | Aspect | Docker | Apple Container |
+   |--------|--------|-----------------|
+   | Binary | `docker` | `container` |
+   | Init | (daemon always running) | `container system start` if not running |
+   | Build | `docker build -t tag -f Dockerfile .` | `container build -t tag -f Dockerfile .` |
+   | Mount syntax | `-v /host:/container` | `--mount type=bind,src=/host,dst=/container` |
+   | Env vars | `-e KEY=VALUE` works | `-e` buggy with `-i`; write secrets to temp file, mount it |
+   | Detection | `docker --version` | `which container && container --version` |
+   | Kill | `docker kill` | `container kill` |
+
+   Key behavioral requirements:
+   - `ensureSystemStarted()`: call `container system start` before build operations
+   - `translateArgs()`: convert `-v` mounts to `--mount` syntax, collect `-e` vars into a temp secrets JSON file mounted read-only at `/secrets.json`
+   - Agent-runner reads from `/secrets.json` if stdin secrets are empty
 4. Export `detectRuntime()` function:
    - Returns `DockerRuntime` by default
    - Returns `AppleContainerRuntime` if `CONTAINER_RUNTIME === 'apple-container'`

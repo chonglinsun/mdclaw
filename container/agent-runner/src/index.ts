@@ -1,12 +1,13 @@
 // mdclaw agent-runner: entry point for containerized Claude agent execution
 
-import { query, type ClaudeCodeResult } from '@anthropic-ai/claude-code';
+import { query } from '@anthropic-ai/claude-code';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MessageStream } from './message-stream.js';
 import { writeIpcCommand } from './ipc-writer.js';
 import { archiveTranscript } from './transcript.js';
 import { sanitizeEnv } from './security-hooks.js';
+import { createMcpServer, type McpServerConfig } from './mcp-server.js';
 
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
@@ -51,33 +52,78 @@ function emitOutput(text: string): void {
 }
 
 /**
- * Builds the system prompt with MCP tool descriptions.
- * The agent gets context about available tools via the system prompt
- * since we use the Claude Code SDK (which handles MCP internally).
+ * Reads an optional personality file from the data directory.
+ * Returns empty string if not found.
+ */
+function readPersonalityFile(filePath: string): string {
+  try {
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, 'utf-8').trim();
+    }
+  } catch {
+    // Non-fatal — personality files are optional
+  }
+  return '';
+}
+
+/**
+ * Builds the system prompt with personality, identity, and context.
+ * MCP tools are wired directly via the SDK — no need to describe them in prose.
  */
 function buildSystemPrompt(input: ContainerInput): string {
   const parts: string[] = [];
 
+  // Personality files: IDENTITY.md and SOUL.md from mounted /data/
+  const identity = readPersonalityFile('/data/IDENTITY.md');
+  const soul = readPersonalityFile('/data/SOUL.md');
+
+  if (identity) {
+    parts.push(identity);
+    parts.push('');
+  }
+
+  if (soul) {
+    parts.push(soul);
+    parts.push('');
+  }
+
+  // Session summaries from previous conversations
+  const sessionsIndex = readPersonalityFile('/data/sessions-index.json');
+  if (sessionsIndex) {
+    try {
+      const sessions = JSON.parse(sessionsIndex) as Array<{ summary?: string }>;
+      const summaries = sessions
+        .filter((s) => s.summary)
+        .map((s) => s.summary)
+        .slice(-5);
+      if (summaries.length > 0) {
+        parts.push('## Recent conversation context');
+        parts.push(summaries.join('\n'));
+        parts.push('');
+      }
+    } catch {
+      // Non-fatal — sessions index may be malformed
+    }
+  }
+
   parts.push(`You are ${input.assistantName}, a helpful AI assistant.`);
   parts.push(`You are responding in the group "${input.groupFolder}" (chat: ${input.chatJid}).`);
-  parts.push('');
-  parts.push('## Available actions');
-  parts.push('');
-  parts.push('To send a message to the chat, use the send_message MCP tool.');
-  parts.push('To manage scheduled tasks, use schedule_task, list_tasks, pause_task, resume_task, cancel_task.');
 
   if (input.isMain) {
     parts.push('You are in the MAIN GROUP with admin privileges.');
-    parts.push('You can register new groups with register_group and list them with list_groups.');
   } else {
     parts.push('You are in a non-main group with restricted permissions.');
-    parts.push('You can only manage tasks belonging to this group.');
   }
 
   if (input.isScheduledTask) {
     parts.push('');
     parts.push('This is a SCHEDULED TASK execution. Complete the task and send any output via send_message.');
   }
+
+  parts.push('');
+  parts.push('## Collaboration');
+  parts.push('');
+  parts.push('For complex multi-step work, you have access to agent collaboration tools (Task, TaskList, etc.) that let you spawn sub-agents to work in parallel. Use them when a task is large enough to benefit from decomposition.');
 
   return parts.join('\n');
 }
@@ -90,9 +136,23 @@ async function main(): Promise<void> {
   // 1. Read input from stdin
   const input = await readStdin();
 
-  // 2. Set API key from secrets (don't pollute process.env broadly)
-  if (input.secrets.ANTHROPIC_API_KEY) {
-    process.env.ANTHROPIC_API_KEY = input.secrets.ANTHROPIC_API_KEY;
+  // 2. Set secrets in process.env so the SDK can authenticate.
+  // Apple Container runtime mounts secrets as /secrets.json instead of -e env vars,
+  // so fall back to reading that file if stdin secrets are empty.
+  let secrets = input.secrets;
+  if (!secrets || Object.keys(secrets).length === 0) {
+    try {
+      if (fs.existsSync('/secrets.json')) {
+        secrets = JSON.parse(fs.readFileSync('/secrets.json', 'utf-8'));
+      }
+    } catch {
+      // Non-fatal — secrets file may not exist (Docker runtime uses -e instead)
+    }
+  }
+  for (const [key, value] of Object.entries(secrets)) {
+    if (value) {
+      process.env[key] = value;
+    }
   }
 
   // 3. Set up paths
@@ -100,12 +160,21 @@ async function main(): Promise<void> {
   const dataDir = '/data';
   const sessionsDir = path.join(dataDir, 'sessions');
 
-  // 4. Write MCP tool config for the agent
-  // Instead of running a separate MCP server process, we provide tools
-  // via the Claude Code SDK's tool system
+  // 4. Create MCP server instance for tool access
+  const mcpConfig: McpServerConfig = {
+    groupFolder: input.groupFolder,
+    chatJid: input.chatJid,
+    ipcDir,
+    isMain: input.isMain,
+    assistantName: input.assistantName,
+    outputStream: process.stdout,
+  };
+  const mcpServer = createMcpServer(mcpConfig);
+
+  // 5. Build system prompt (no tool descriptions — MCP tools are wired directly)
   const systemPrompt = buildSystemPrompt(input);
 
-  // 5. Prepare allowed tools
+  // 6. Prepare allowed tools
   const allowedTools = [
     'bash',
     'computer',
@@ -113,64 +182,99 @@ async function main(): Promise<void> {
     'mcp__*',
   ];
 
-  // 6. Set up the message stream for multi-turn
+  // 7. Set up the message stream for multi-turn
   const messageStream = new MessageStream(ipcDir);
 
-  // 7. Sanitize environment for subprocess spawning
+  // 8. Sanitize environment for subprocess spawning (strip API keys from child processes)
   const cleanEnv = sanitizeEnv(process.env as Record<string, string | undefined>);
 
-  // 8. Run initial prompt through Claude Code SDK
+  // 9. Run initial prompt through Claude Code SDK
   let conversationLog = '';
 
   try {
-    const result: ClaudeCodeResult = await query({
-      prompt: input.prompt,
-      systemPrompt,
+    const queryOptions = {
       allowedTools,
-      options: {
-        maxTurns: 50,
+      customSystemPrompt: systemPrompt,
+      maxTurns: 15,
+      permissionMode: 'bypassPermissions' as const,
+      env: cleanEnv,
+      mcpServers: {
+        mdclaw: {
+          type: 'sdk' as const,
+          name: 'mdclaw',
+          instance: mcpServer,
+        },
       },
+    };
+
+    const stream = query({
+      prompt: input.prompt,
+      options: queryOptions,
     });
 
-    // Process result — extract text content
-    const textParts: string[] = [];
-    for (const block of result) {
-      if ('text' in block && typeof block.text === 'string') {
-        textParts.push(block.text);
+    // Process streamed messages — extract text, session ID, and last assistant UUID for resume
+    let response = '';
+    let sdkSessionId: string | undefined;
+    let lastAssistantUuid: string | undefined;
+    for await (const message of stream) {
+      // Capture the SDK's session ID from any message (all carry it)
+      if ('session_id' in message && message.session_id) {
+        sdkSessionId = message.session_id as string;
+      }
+
+      if (message.type === 'assistant' && 'message' in message) {
+        // Track the last assistant message UUID for precise resume
+        if ('uuid' in message && message.uuid) {
+          lastAssistantUuid = message.uuid as string;
+        }
+        // Extract text blocks from assistant messages as they arrive
+        const msg = message.message as { content?: Array<{ type: string; text?: string }> };
+        if (msg.content) {
+          for (const block of msg.content) {
+            if (block.type === 'text' && block.text) {
+              response = block.text;
+            }
+          }
+        }
+      } else if (message.type === 'result' && message.subtype === 'success' && 'result' in message) {
+        response = message.result;
       }
     }
 
-    const response = textParts.join('\n');
     if (response) {
       emitOutput(response);
       conversationLog += `## User\n${input.prompt}\n\n## Assistant\n${response}\n\n`;
     }
 
-    // 9. Multi-turn: listen for follow-up messages
-    if (!input.isScheduledTask) {
+    // 10. Multi-turn: listen for follow-up messages with session continuity
+    // Use the SDK's own session ID (not the host's) so resume finds prior context
+    if (!input.isScheduledTask && sdkSessionId) {
       messageStream.start();
 
       for await (const msg of messageStream) {
         const followUpPrompt = `[${msg.sender_name}]: ${msg.content}`;
 
         try {
-          const followUpResult: ClaudeCodeResult = await query({
+          const followUpStream = query({
             prompt: followUpPrompt,
-            systemPrompt,
-            allowedTools,
             options: {
-              maxTurns: 50,
+              ...queryOptions,
+              resume: sdkSessionId,
+              ...(lastAssistantUuid ? { resumeSessionAt: lastAssistantUuid } : {}),
             },
           });
 
-          const followUpParts: string[] = [];
-          for (const block of followUpResult) {
-            if ('text' in block && typeof block.text === 'string') {
-              followUpParts.push(block.text);
+          let followUpResponse = '';
+          for await (const message of followUpStream) {
+            // Update last assistant UUID for next resume
+            if (message.type === 'assistant' && 'uuid' in message && message.uuid) {
+              lastAssistantUuid = message.uuid as string;
+            }
+            if (message.type === 'result' && message.subtype === 'success' && 'result' in message) {
+              followUpResponse = message.result;
             }
           }
 
-          const followUpResponse = followUpParts.join('\n');
           if (followUpResponse) {
             emitOutput(followUpResponse);
             conversationLog += `## User (${msg.sender_name})\n${msg.content}\n\n## Assistant\n${followUpResponse}\n\n`;
@@ -186,7 +290,7 @@ async function main(): Promise<void> {
     process.stderr.write(`Agent error: ${errMsg}\n`);
     emitOutput(`I encountered an error: ${errMsg}`);
   } finally {
-    // 10. Archive transcript
+    // 11. Archive transcript
     messageStream.stop();
 
     if (conversationLog) {

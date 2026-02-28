@@ -14,7 +14,11 @@ mdclaw ships a set of Claude Code skills that, when executed in order, generate 
 git clone → cd mdclaw → claude → /setup
 ```
 
-The layer skills (`/init`, `/add-core`, `/add-containers`, `/add-scheduler`, `/add-orchestrator`, `/add-whatsapp`, `/add-telegram`) are building blocks that `/setup` calls internally. They can be run individually for incremental generation or customization.
+The layer skills (`/init`, `/add-core`, `/add-containers`, `/add-scheduler`, `/add-orchestrator`, `/add-whatsapp`, `/add-telegram`, `/add-discord`, `/add-slack`, `/add-headless`, `/add-gmail`) are building blocks that `/setup` calls internally. They can be run individually for incremental generation or customization.
+
+After setup, use `/customize` to modify the assistant's name, persona, channels, MCP integrations, or deployment settings.
+
+Additional skills: `/add-telegram-swarm` (multi-bot agent teams), `/add-voice-transcription` (Whisper), `/add-x-integration` (X/Twitter), `/add-parallel` (web search MCP), `/add-service` (launchd/systemd), `/debug` (troubleshooting), `/update` (upstream merge), `/get-qodo-rules`, `/qodo-pr-resolver`.
 
 ## Architecture
 
@@ -32,6 +36,7 @@ The layer skills (`/init`, `/add-core`, `/add-containers`, `/add-scheduler`, `/a
 **Anchor contracts (in `.claude/skills/`, referenced by skills):**
 - `types-contract.ts`, `schema.sql` — type and schema contracts
 - `ipc-protocol.md`, `state-machine.md` — behavior specs
+- `headless-protocol.md` — headless/API channel protocol
 
 ### Layer dependency graph
 
@@ -43,8 +48,8 @@ The layer skills (`/init`, `/add-core`, `/add-containers`, `/add-scheduler`, `/a
   ├─ Phase 3:   /add-containers  (container runner, IPC, runtime abstraction)
   ├─ Phase 4:   /add-scheduler   (task scheduler, group queue)
   ├─ Phase 5:   /add-orchestrator (main index.ts wiring, message processor)
-  ├─ Phase 6:   /add-whatsapp and/or /add-telegram (channels)
-  └─ Phase 14:  /test            (15-check pre-flight verification)
+  ├─ Phase 6:   /add-whatsapp, /add-telegram, /add-discord, /add-slack, /add-headless (channels)
+  └─ Phase 14:  /test            (17-check pre-flight verification)
 ```
 
 ### Generated application structure
@@ -69,7 +74,11 @@ src/
 └── channels/
     ├── whatsapp.ts        # Baileys v7: pairing code, LID translation, outbound queue
     ├── whatsapp-auth.ts   # Standalone WhatsApp auth utility
-    └── telegram.ts        # Grammy integration
+    ├── telegram.ts        # Grammy integration
+    ├── discord.ts         # discord.js v14: bot token auth, message intents
+    ├── slack.ts           # @slack/bolt v3: Socket Mode, app-level token
+    ├── headless.ts        # node:http API: POST /message, GET /groups, GET /health
+    └── gmail.ts           # googleapis: OAuth2, channel or MCP-tool mode
 ```
 
 ### Container architecture
@@ -78,17 +87,41 @@ src/
 container/
 ├── Dockerfile            # node:22-slim + Chromium + agent-runner
 ├── build.sh              # Build script
+├── skills/
+│   ├── agent-browser/    # Browser automation skill (Playwright via agent-browser CLI)
+│   └── x-integration/    # X/Twitter browser automation skill
 └── agent-runner/
     ├── package.json
     ├── tsconfig.json
     └── src/
-        ├── index.ts          # Entry: read ContainerInput JSON, run Claude SDK
+        ├── index.ts          # Entry: read ContainerInput JSON, wire MCP, run Claude SDK
         ├── mcp-server.ts     # MCP tools: send_message, schedule/list/pause/resume/cancel_task
         ├── message-stream.ts # Async iterable for multi-turn follow-up messages
         ├── ipc-writer.ts     # Atomic IPC command file writer
-        ├── security-hooks.ts # Strip API keys from subprocess env
+        ├── security-hooks.ts # sanitizeEnv() for subprocess environment
         └── transcript.ts     # Archive conversation to markdown
 ```
+
+### Personality files
+
+Group data directories can contain personality files that customize the agent's behavior:
+
+- `data/{group}/IDENTITY.md` — who the assistant IS (name, role, personality traits)
+- `data/{group}/SOUL.md` — deep behavioral principles (values, communication style)
+- `data/global/IDENTITY.md` — shared identity defaults (overridden by group-specific)
+- `data/global/SOUL.md` — shared principles defaults (overridden by group-specific)
+
+These are automatically mounted into containers at `/data/IDENTITY.md` and `/data/SOUL.md` via the existing data dir mount. The agent-runner reads them at startup and prepends them to the system prompt.
+
+### Agent swarms
+
+Agent swarms (multi-agent collaboration) are Claude Code's native feature. They work automatically inside containers when:
+1. The Claude Code CLI is installed (already in Dockerfile)
+2. The API key reaches `query()` (passed via ContainerInput secrets)
+3. MCP tools work (wired directly into the SDK)
+4. The file system is writable (container has `/home/node/`)
+
+No custom IPC or MCP tools are needed — Claude Code's built-in Task, TaskList, and related tools handle swarm coordination natively.
 
 ## Conventions
 
@@ -145,9 +178,11 @@ TypeScript's type checker is the cross-skill integration test. If `npx tsc --noE
 | `CONTAINER_TIMEOUT` | 1800000 | Max container execution time (ms) |
 | `MAX_OUTPUT_SIZE` | 10485760 | Max container output (10 MB) |
 | `MAX_CONCURRENT_CONTAINERS` | 5 | Concurrency limit |
-| `CONTAINER_RUNTIME` | `'docker'` | Container binary |
+| `CONTAINER_RUNTIME` | `'docker'` | Container binary (`'docker'` or `'apple-container'`) |
 | `CONTAINER_IMAGE` | `'mdclaw'` | Docker image name |
 | `ASSISTANT_NAME` | `'Andy'` | Default assistant name |
+| `ASSISTANT_HAS_OWN_NUMBER` | `false` | Dedicated phone number mode (changes trigger behavior) |
+| `HEADLESS_PORT` | 3000 | Headless API server port |
 
 ### Security model
 

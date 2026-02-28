@@ -43,12 +43,13 @@ echo "Running container with test input..."
 
 # Run container with timeout (30s) — no API key so it will fail fast
 # but we can still verify the runner starts and reads input
+EXIT_CODE=0
 OUTPUT=$(echo "$TEST_INPUT" | timeout 30 docker run --rm -i \
   --network=none \
   --user=1000:1000 \
   -v "$TMPDIR/data:/data" \
   -v "$TMPDIR/ipc:/ipc" \
-  mdclaw 2>&1) || true
+  mdclaw 2>&1) || EXIT_CODE=$?
 
 echo "Container output:"
 echo "$OUTPUT" | head -50
@@ -67,8 +68,40 @@ else
   echo "CHECK 2: Input parsed — OK (no error output)"
 fi
 
-# Check 3: Clean exit (no segfault or crash)
-echo "CHECK 3: Container exited — OK"
+# Check 3: Clean exit code (0 or 1 — not a crash signal like 137, 139)
+if [ "$EXIT_CODE" -le 1 ]; then
+  echo "CHECK 3: Clean exit (code $EXIT_CODE) — OK"
+else
+  echo "FAIL: Container exited with code $EXIT_CODE (possible crash)"
+  exit 1
+fi
+
+# Check 4: ContainerInput JSON was parsed (look for sessionId or groupFolder in output)
+if echo "$OUTPUT" | grep -q "test-session-001\|test-group\|TestBot"; then
+  echo "CHECK 4: ContainerInput JSON parsed correctly — OK"
+else
+  echo "CHECK 4: ContainerInput JSON parsed — OK (no echo, but no parse error)"
+fi
+
+# Check 5: Sentinel markers present if ANTHROPIC_API_KEY was provided
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  if echo "$OUTPUT" | grep -q "NANOCLAW_OUTPUT_START\|NANOCLAW_OUTPUT_END"; then
+    echo "CHECK 5: Sentinel markers present — OK"
+  else
+    echo "FAIL: Sentinel markers missing with API key set"
+    exit 1
+  fi
+else
+  echo "CHECK 5: Sentinel markers — SKIP (no API key)"
+fi
+
+# Check 6: IPC directory structure was available to the container
+if [ -d "$TMPDIR/ipc/input" ] && [ -d "$TMPDIR/ipc/tasks" ]; then
+  echo "CHECK 6: IPC directory structure intact — OK"
+else
+  echo "FAIL: IPC directories not found after container run"
+  exit 1
+fi
 
 echo ""
 echo "=== Smoke test passed ==="

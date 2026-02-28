@@ -7,8 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI globally (fallback)
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI and agent-browser globally
+RUN npm install -g @anthropic-ai/claude-code agent-browser
 
 # Copy and build agent-runner
 COPY container/agent-runner/ /agent-runner/
