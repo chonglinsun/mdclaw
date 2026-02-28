@@ -12,6 +12,8 @@ import { createMcpServer, type McpServerConfig } from './mcp-server.js';
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
+const IPC_POLL_MS = 500;
+
 interface ContainerInput {
   prompt: string;
   sessionId: string;
@@ -121,6 +123,13 @@ function buildSystemPrompt(input: ContainerInput): string {
   }
 
   parts.push('');
+  parts.push('## Communication');
+  parts.push('');
+  parts.push('Your output is sent to the user or group.');
+  parts.push('');
+  parts.push('You also have `send_message` which sends a message immediately while you are still working. This is useful when you want to acknowledge a request before starting longer work, or to send intermediate progress updates.');
+
+  parts.push('');
   parts.push('## Collaboration');
   parts.push('');
   parts.push('For complex multi-step work, you have access to agent collaboration tools (Task, TaskList, etc.) that let you spawn sub-agents to work in parallel. Use them when a task is large enough to benefit from decomposition.');
@@ -129,8 +138,57 @@ function buildSystemPrompt(input: ContainerInput): string {
 }
 
 /**
- * Main entry point. Reads input, runs Claude Agent SDK session,
- * handles multi-turn follow-ups, and archives transcript on exit.
+ * Drains all pending IPC input messages from the input directory.
+ * Returns an array of formatted message strings.
+ */
+function drainIpcInput(inputDir: string): string[] {
+  const messages: string[] = [];
+  try {
+    if (!fs.existsSync(inputDir)) return messages;
+    const files = fs.readdirSync(inputDir).sort();
+
+    for (const file of files) {
+      if (file === '_close' || !file.endsWith('.json')) continue;
+      const filePath = path.join(inputDir, file);
+      try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const msg = JSON.parse(raw) as { sender_name?: string; content?: string; text?: string };
+        fs.unlinkSync(filePath);
+        // Support both { sender_name, content } and { text } formats
+        const text = msg.content || msg.text || '';
+        const sender = msg.sender_name || 'User';
+        if (text) {
+          messages.push(`[${sender}]: ${text}`);
+        }
+      } catch {
+        try { fs.unlinkSync(path.join(inputDir, file)); } catch {}
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+  return messages;
+}
+
+/**
+ * Checks if the _close sentinel file exists in the input directory.
+ */
+function shouldClose(inputDir: string): boolean {
+  try {
+    const closePath = path.join(inputDir, '_close');
+    if (fs.existsSync(closePath)) {
+      fs.unlinkSync(closePath);
+      return true;
+    }
+  } catch {
+    // Non-fatal
+  }
+  return false;
+}
+
+/**
+ * Main entry point. Reads input, runs Claude Agent SDK session
+ * with a push-based message stream for multi-turn, and archives transcript.
  */
 async function main(): Promise<void> {
   // 1. Read input from stdin
@@ -161,6 +219,8 @@ async function main(): Promise<void> {
   const ipcDir = '/ipc';
   const dataDir = '/data';
   const sessionsDir = path.join(dataDir, 'sessions');
+  const inputDir = path.join(ipcDir, 'input');
+  fs.mkdirSync(inputDir, { recursive: true });
 
   // 4. Create MCP server instance for tool access
   const mcpConfig: McpServerConfig = {
@@ -184,117 +244,120 @@ async function main(): Promise<void> {
     'mcp__*',
   ];
 
-  // 7. Set up the message stream for multi-turn
-  const messageStream = new MessageStream(ipcDir);
-
-  // 8. Run initial prompt through Claude Code SDK
+  // 7. Run query with push-based message stream
   let conversationLog = '';
+  let sessionId: string | undefined;
+  let resumeAt: string | undefined;
 
   try {
-    const queryOptions = {
-      allowedTools,
-      customSystemPrompt: systemPrompt,
-      maxTurns: 15,
-      permissionMode: 'bypassPermissions' as const,
-      env: sdkEnv,
-      mcpServers: {
-        mdclaw: {
-          type: 'sdk' as const,
-          name: 'mdclaw',
-          instance: mcpServer,
-        },
-      },
-      hooks: {
-        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
-      },
-    };
+    // Query loop: run query → wait for IPC message → run query with resume → repeat
+    // Most follow-ups are piped into the stream during a single query() call.
+    // The outer loop only fires when the query finishes and a new message arrives later.
+    while (true) {
+      // Create a push-based message stream and pipe the initial prompt
+      const stream = new MessageStream();
+      stream.push(input.prompt);
 
-    const stream = query({
-      prompt: input.prompt,
-      options: queryOptions,
-    });
-
-    // Process streamed messages — extract text, session ID, and last assistant UUID for resume
-    let response = '';
-    let sdkSessionId: string | undefined;
-    let lastAssistantUuid: string | undefined;
-    for await (const message of stream) {
-      // Capture the SDK's session ID from any message (all carry it)
-      if ('session_id' in message && message.session_id) {
-        sdkSessionId = message.session_id as string;
+      // Poll IPC for follow-up messages during the query (non-scheduled only)
+      let ipcPolling = !input.isScheduledTask;
+      let closedDuringQuery = false;
+      const pollIpc = (): void => {
+        if (!ipcPolling) return;
+        if (shouldClose(inputDir)) {
+          closedDuringQuery = true;
+          stream.end();
+          ipcPolling = false;
+          return;
+        }
+        const messages = drainIpcInput(inputDir);
+        for (const text of messages) {
+          stream.push(text);
+        }
+        setTimeout(pollIpc, IPC_POLL_MS);
+      };
+      if (ipcPolling) {
+        setTimeout(pollIpc, IPC_POLL_MS);
       }
 
-      if (message.type === 'assistant' && 'message' in message) {
-        // Track the last assistant message UUID for precise resume
-        if ('uuid' in message && message.uuid) {
-          lastAssistantUuid = message.uuid as string;
-        }
-        // Extract text blocks from assistant messages as they arrive
-        const msg = message.message as { content?: Array<{ type: string; text?: string }> };
-        if (msg.content) {
-          for (const block of msg.content) {
-            if (block.type === 'text' && block.text) {
-              response = block.text;
-            }
-          }
-        }
-      } else if (message.type === 'result' && message.subtype === 'success' && 'result' in message) {
-        response = message.result;
-      }
-    }
+      // Create a fresh MCP server for each query() call
+      const currentMcpServer = sessionId ? createMcpServer(mcpConfig) : mcpServer;
 
-    if (response) {
-      emitOutput(response);
-      conversationLog += `## User\n${input.prompt}\n\n## Assistant\n${response}\n\n`;
-    }
-
-    // 10. Multi-turn: listen for follow-up messages with session continuity
-    // Use the SDK's own session ID (not the host's) so resume finds prior context
-    if (!input.isScheduledTask && sdkSessionId) {
-      messageStream.start();
-
-      for await (const msg of messageStream) {
-        const followUpPrompt = `[${msg.sender_name}]: ${msg.content}`;
-
-        try {
-          const followUpStream = query({
-            prompt: followUpPrompt,
-            options: {
-              ...queryOptions,
-              resume: sdkSessionId,
-              ...(lastAssistantUuid ? { resumeSessionAt: lastAssistantUuid } : {}),
+      const queryStream = query({
+        prompt: stream,
+        options: {
+          allowedTools,
+          customSystemPrompt: systemPrompt,
+          maxTurns: 15,
+          permissionMode: 'bypassPermissions' as const,
+          env: sdkEnv,
+          mcpServers: {
+            mdclaw: {
+              type: 'sdk' as const,
+              name: 'mdclaw',
+              instance: currentMcpServer,
             },
-          });
+          },
+          hooks: {
+            PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
+          },
+          ...(sessionId ? { resume: sessionId } : {}),
+          ...(resumeAt ? { resumeSessionAt: resumeAt } : {}),
+        },
+      });
 
-          let followUpResponse = '';
-          for await (const message of followUpStream) {
-            // Update last assistant UUID for next resume
-            if (message.type === 'assistant' && 'uuid' in message && message.uuid) {
-              lastAssistantUuid = message.uuid as string;
-            }
-            if (message.type === 'result' && message.subtype === 'success' && 'result' in message) {
-              followUpResponse = message.result;
+      // Process streamed messages
+      let response = '';
+      for await (const message of queryStream) {
+        // Capture session ID from any message
+        if ('session_id' in message && message.session_id) {
+          sessionId = message.session_id as string;
+        }
+        // Track last assistant UUID for precise resume
+        if (message.type === 'assistant' && 'uuid' in message && message.uuid) {
+          resumeAt = message.uuid as string;
+        }
+        // Extract text from assistant messages
+        if (message.type === 'assistant' && 'message' in message) {
+          const msg = message.message as { content?: Array<{ type: string; text?: string }> };
+          if (msg.content) {
+            for (const block of msg.content) {
+              if (block.type === 'text' && block.text) {
+                response = block.text;
+              }
             }
           }
-
-          if (followUpResponse) {
-            emitOutput(followUpResponse);
-            conversationLog += `## User (${msg.sender_name})\n${msg.content}\n\n## Assistant\n${followUpResponse}\n\n`;
-          }
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`Follow-up error: ${errMsg}\n`);
+        } else if (message.type === 'result' && message.subtype === 'success' && 'result' in message) {
+          response = message.result;
         }
       }
+
+      // Stop IPC polling for this query
+      ipcPolling = false;
+
+      if (response) {
+        emitOutput(response);
+        conversationLog += `## User\n${input.prompt}\n\n## Assistant\n${response}\n\n`;
+      }
+
+      // If close sentinel arrived during query, or scheduled task, we're done
+      if (closedDuringQuery || input.isScheduledTask) {
+        break;
+      }
+
+      // Wait for the next IPC message or _close sentinel
+      const nextMessage = await waitForNextMessage(inputDir);
+      if (nextMessage === null) {
+        break; // _close sentinel
+      }
+
+      // Set up next iteration with the follow-up prompt
+      input.prompt = nextMessage;
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`Agent error: ${errMsg}\n`);
     emitOutput(`I encountered an error: ${errMsg}`);
   } finally {
-    // 11. Archive transcript
-    messageStream.stop();
-
     if (conversationLog) {
       try {
         archiveTranscript(sessionsDir, input.groupFolder, conversationLog);
@@ -303,6 +366,28 @@ async function main(): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * Waits for the next IPC message or _close sentinel.
+ * Returns the formatted message string, or null if _close received.
+ */
+function waitForNextMessage(inputDir: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const poll = (): void => {
+      if (shouldClose(inputDir)) {
+        resolve(null);
+        return;
+      }
+      const messages = drainIpcInput(inputDir);
+      if (messages.length > 0) {
+        resolve(messages[0]);
+        return;
+      }
+      setTimeout(poll, IPC_POLL_MS);
+    };
+    poll();
+  });
 }
 
 main().catch((err) => {
