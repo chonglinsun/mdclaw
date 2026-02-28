@@ -183,7 +183,7 @@ mdclaw/
 │           ├── mcp-server.ts          #   MCP tools for the agent
 │           ├── message-stream.ts      #   Multi-turn follow-up polling
 │           ├── ipc-writer.ts          #   Atomic file-based IPC
-│           ├── security-hooks.ts      #   Environment sanitization
+│           ├── security-hooks.ts      #   PreToolUse bash hook to strip secrets
 │           └── transcript.ts          #   Conversation archival
 │
 └── test/
@@ -254,7 +254,7 @@ Each conversation turn runs in an isolated container:
 - **No network persistence.** Containers are ephemeral — started for each message batch, destroyed after.
 - **No host access.** The container sees only mounted directories (`/data`, `/ipc`, `/app`) and stdin/stdout.
 - **Secrets via stdin.** API keys are sent in the `ContainerInput` JSON, never baked into the image. For Apple Container (where `-e` flags are buggy with stdin), secrets are written to a temp file mounted at `/secrets.json`.
-- **Environment sanitization.** After the agent-runner sets API keys in `process.env` (needed by the Claude SDK), it strips them from the subprocess environment via `sanitizeEnv()`. This prevents Claude's bash tool from reading keys.
+- **Environment sanitization.** Secrets are merged into an isolated `sdkEnv` clone — never written to `process.env`. The SDK receives `sdkEnv` via `options.env` for API authentication. A `PreToolUse` hook on `Bash` prepends `unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN CLAUDE_API_KEY` to every shell command, preventing Claude's bash tool from reading keys even though the SDK process has them.
 
 ### Multi-turn conversations
 
@@ -336,7 +336,7 @@ Concurrency: single Node.js process, per-group serialization via group queue, gl
 | Main vs non-main groups | Main group has admin privileges (register groups, refresh). Non-main groups can only manage their own tasks. |
 | Inbound messages | Treated as potential prompt injection. Wrapped in XML context tags. Internal `<internal>...</internal>` tags stripped from outbound. |
 | Container isolation | Sandboxed process with mounted directories only. No host network access. |
-| API keys | Stdin-only delivery. Stripped from subprocess env. Never in `process.env` on host. |
+| API keys | Stdin delivery → isolated `sdkEnv` clone (never `process.env`). `PreToolUse` bash hook strips keys from shell subprocesses. Never in `process.env` on host. |
 | IPC authorization | `source_group` must match directory. Cross-group escalation prevented by namespace isolation. |
 | Mount paths | Allowlist-validated. Non-main groups get read-only mounts. |
 | Group folder names | Validated: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`. "global" is reserved. |

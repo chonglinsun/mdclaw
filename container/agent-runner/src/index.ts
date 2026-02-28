@@ -6,7 +6,7 @@ import path from 'node:path';
 import { MessageStream } from './message-stream.js';
 import { writeIpcCommand } from './ipc-writer.js';
 import { archiveTranscript } from './transcript.js';
-import { sanitizeEnv } from './security-hooks.js';
+import { createSanitizeBashHook } from './security-hooks.js';
 import { createMcpServer, type McpServerConfig } from './mcp-server.js';
 
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -136,9 +136,10 @@ async function main(): Promise<void> {
   // 1. Read input from stdin
   const input = await readStdin();
 
-  // 2. Set secrets in process.env so the SDK can authenticate.
-  // Apple Container runtime mounts secrets as /secrets.json instead of -e env vars,
-  // so fall back to reading that file if stdin secrets are empty.
+  // 2. Build SDK environment with secrets — never mutate process.env.
+  // Secrets are merged into a clone of process.env and passed exclusively
+  // via options.env. This keeps process.env clean so any code that spawns
+  // subprocesses outside the SDK won't leak API keys.
   let secrets = input.secrets;
   if (!secrets || Object.keys(secrets).length === 0) {
     try {
@@ -149,9 +150,10 @@ async function main(): Promise<void> {
       // Non-fatal — secrets file may not exist (Docker runtime uses -e instead)
     }
   }
+  const sdkEnv: Record<string, string | undefined> = { ...process.env };
   for (const [key, value] of Object.entries(secrets)) {
     if (value) {
-      process.env[key] = value;
+      sdkEnv[key] = value;
     }
   }
 
@@ -185,10 +187,7 @@ async function main(): Promise<void> {
   // 7. Set up the message stream for multi-turn
   const messageStream = new MessageStream(ipcDir);
 
-  // 8. Sanitize environment for subprocess spawning (strip API keys from child processes)
-  const cleanEnv = sanitizeEnv(process.env as Record<string, string | undefined>);
-
-  // 9. Run initial prompt through Claude Code SDK
+  // 8. Run initial prompt through Claude Code SDK
   let conversationLog = '';
 
   try {
@@ -197,13 +196,16 @@ async function main(): Promise<void> {
       customSystemPrompt: systemPrompt,
       maxTurns: 15,
       permissionMode: 'bypassPermissions' as const,
-      env: cleanEnv,
+      env: sdkEnv,
       mcpServers: {
         mdclaw: {
           type: 'sdk' as const,
           name: 'mdclaw',
           instance: mcpServer,
         },
+      },
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
       },
     };
 

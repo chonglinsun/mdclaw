@@ -98,7 +98,7 @@ container/
         ├── mcp-server.ts     # MCP tools: send_message, schedule/list/pause/resume/cancel_task
         ├── message-stream.ts # Async iterable for multi-turn follow-up messages
         ├── ipc-writer.ts     # Atomic IPC command file writer
-        ├── security-hooks.ts # sanitizeEnv() for subprocess environment
+        ├── security-hooks.ts # PreToolUse bash hook to strip secrets from shell commands
         └── transcript.ts     # Archive conversation to markdown
 ```
 
@@ -191,7 +191,8 @@ TypeScript's type checker is the cross-skill integration test. If `npx tsc --noE
 - **Containers**: sandboxed, JSON stdin for secrets, MCP for structured I/O
 - **Messages**: treated as potential attack vectors (prompt injection)
 - **Internal tags**: `<internal>...</internal>` stripped from outbound messages
-- **Environment**: secrets never in `process.env`, only in isolated `env` object
+- **Environment (host)**: secrets loaded into isolated `env` object only — never in `process.env`
+- **Environment (container)**: secrets merged into `sdkEnv` clone (never `process.env`), passed via `options.env`; `PreToolUse` bash hook prepends `unset` to strip keys from shell subprocesses
 - IPC uses per-group namespaces to prevent cross-group escalation
 - Group folder names validated: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, "global" reserved
 
