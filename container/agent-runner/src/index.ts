@@ -233,15 +233,18 @@ async function main(): Promise<void> {
   };
   const mcpServer = createMcpServer(mcpConfig);
 
-  // 5. Build system prompt (no tool descriptions — MCP tools are wired directly)
+  // 5. Build system prompt — appended to the built-in Claude Code prompt
+  // (not replacing it, so the agent retains tool documentation and safety instructions)
   const systemPrompt = buildSystemPrompt(input);
 
-  // 6. Prepare allowed tools
+  // 6. Prepare allowed tools (PascalCase — Claude Code tool names, not API tool names)
   const allowedTools = [
-    'bash',
-    'computer',
-    'editor',
-    'mcp__*',
+    'Bash',
+    'Read', 'Write', 'Edit', 'Glob', 'Grep',
+    'WebSearch', 'WebFetch',
+    'Task', 'TaskOutput', 'TaskStop',
+    'TodoWrite', 'NotebookEdit',
+    'mcp__mdclaw__*',
   ];
 
   // 7. Run query with push-based message stream
@@ -285,9 +288,9 @@ async function main(): Promise<void> {
       const queryStream = query({
         prompt: stream,
         options: {
+          cwd: '/data',
           allowedTools,
-          customSystemPrompt: systemPrompt,
-          maxTurns: 15,
+          appendSystemPrompt: systemPrompt,
           permissionMode: 'bypassPermissions' as const,
           env: sdkEnv,
           mcpServers: {

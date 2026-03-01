@@ -34,9 +34,10 @@ export function createMcpServer(config: McpServerConfig): McpServer {
   // Writes a sentinel-marked message to stdout for the host to capture and deliver.
   server.tool(
     'send_message',
-    'Send a message to the current chat. The message will be delivered via the channel (WhatsApp/Telegram).',
+    'Send a message to the current chat immediately. Useful for acknowledgments or progress updates while still working.',
     {
       text: z.string().describe('The message text to send'),
+      sender: z.string().optional().describe('Optional sender identity (e.g., "Researcher"). Used by Telegram swarm for per-agent bot names.'),
     },
     async ({ text }) => {
       const output = `\n${OUTPUT_START_MARKER}\n${text}\n${OUTPUT_END_MARKER}\n`;
