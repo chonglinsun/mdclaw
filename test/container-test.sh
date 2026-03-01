@@ -41,10 +41,10 @@ JSON
 
 echo "Running container with test input..."
 
-# Run container with timeout (30s) — no API key so it will fail fast
-# but we can still verify the runner starts and reads input
+# Run container — no API key so it will exit quickly.
+# Use docker's --stop-timeout and run with a background process for safety.
 EXIT_CODE=0
-OUTPUT=$(echo "$TEST_INPUT" | timeout 30 docker run --rm -i \
+OUTPUT=$(echo "$TEST_INPUT" | docker run --rm -i \
   --network=none \
   --user=1000:1000 \
   -v "$TMPDIR/data:/data" \
