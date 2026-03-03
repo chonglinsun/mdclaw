@@ -308,7 +308,7 @@ async function main(): Promise<void> {
         },
       });
 
-      // Process streamed messages
+      // Process streamed messages — emit output immediately as results arrive
       let response = '';
       for await (const message of queryStream) {
         // Capture session ID from any message
@@ -332,11 +332,25 @@ async function main(): Promise<void> {
         } else if (message.type === 'result' && message.subtype === 'success' && 'result' in message) {
           response = message.result;
         }
+
+        // Emit output immediately when we get a result — don't wait for the loop to end,
+        // because for multi-turn streams the loop may never end until _close.
+        if (message.type === 'result' && response) {
+          emitOutput(response);
+          conversationLog += `## User\n${input.prompt}\n\n## Assistant\n${response}\n\n`;
+          response = '';
+
+          // For scheduled tasks, end the stream to finish the query
+          if (input.isScheduledTask) {
+            stream.end();
+          }
+        }
       }
 
       // Stop IPC polling for this query
       ipcPolling = false;
 
+      // Emit any remaining response that wasn't emitted yet
       if (response) {
         emitOutput(response);
         conversationLog += `## User\n${input.prompt}\n\n## Assistant\n${response}\n\n`;
