@@ -101,6 +101,7 @@ interface ChannelRegistration {
      assistantName: env.ASSISTANT_NAME,
      secrets: {
        ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY ?? '',
+       ...(env.CLAUDE_CODE_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: env.CLAUDE_CODE_OAUTH_TOKEN } : {}),
      },
    };
    ```
@@ -113,31 +114,39 @@ interface ChannelRegistration {
 4. **Multi-turn message delivery**:
    - When a message arrives for a group with a running container → write to `ipc/${groupFolder}/input/` via `writeFollowUpMessage()`
    - Track active containers per group to know when to route to IPC vs queue new container
+   - Send typing indicator when routing follow-up messages to active containers (so user sees "typing..." after their follow-up)
 
 5. **Streaming output delivery**:
    - Wire `onOutput` callback to `channel.sendMessage` for streaming delivery
    - Each sentinel-marked output block is sent as it arrives (don't wait for container exit)
    - Strip `<internal>...</internal>` tags from outbound messages
+   - Store bot messages in DB with `is_from_me: true, is_bot_message: true`
 
-6. **Cursor rollback**:
+6. **Typing indicators**:
+   - When a container starts executing for a group, immediately call `channel.setTyping(chatJid, true)` and repeat every 3 seconds via `setInterval`
+   - When first output arrives (`onOutput` callback fires), clear the typing interval
+   - When a follow-up message arrives for a group with an active container (routed to IPC), also fire `setTyping(chatJid, true)` so the user sees typing resume
+   - Always clean up the typing interval in the `finally` block
+
+7. **Cursor rollback**:
    - Advance `lastProcessed` before processing (optimistic)
    - Roll back on error UNLESS output was already sent to the channel
    - This prevents message loss on container crashes
 
-7. Channel registration:
+8. Channel registration:
    - Import channels dynamically based on configuration
    - Each channel provides `connect()`, `sendMessage()`, `isConnected()`, `ownsJid()`, `disconnect()`
    - Route inbound messages through `OnInboundMessage` callback which stores in DB
    - Route chat metadata through `OnChatMetadata` callback which updates DB
 
-8. Message polling pipeline:
+9. Message polling pipeline:
    - For each registered group, query new messages since last-processed timestamp
    - Deduplicate by group (batch all new messages together)
    - Check trigger conditions via message processor
    - If triggered: enqueue container execution in group queue
    - Update last-processed timestamp after successful processing
 
-9. IPC integration:
+10. IPC integration:
    - Wire IPC handlers to scheduler functions:
      - `onScheduleTask` → `createTask`
      - `onPauseTask` → `pauseTask`
@@ -146,11 +155,11 @@ interface ChannelRegistration {
      - `onRefreshGroups` → `router.loadState()`
      - `onRegisterGroup` → `router.registerGroup()`
 
-10. Crash recovery:
+11. Crash recovery:
     - On startup, scan registered groups for unprocessed messages (messages after last-processed timestamp)
     - Process any backlog before entering the normal polling loop
 
-11. Graceful shutdown:
+12. Graceful shutdown:
     - Listen for SIGTERM and SIGINT
     - Stop all polling loops (message poll, scheduler, IPC watcher)
     - Signal active containers to close via `writeCloseSentinel()`

@@ -84,11 +84,13 @@ interface IpcCommand {
    interface ContainerRuntime {
      build(tag: string, dockerfilePath: string, contextDir: string): Promise<void>;
      run(args: string[], stdin?: string): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+     runStreaming(args: string[], stdin: string | undefined, onStdout: (chunk: string) => void): Promise<{ stderr: string; exitCode: number }>;
      kill(containerId: string): Promise<void>;
      list(label: string): Promise<string[]>;
      cleanup(label: string): Promise<void>;
    }
    ```
+   - `runStreaming` streams stdout chunks to the callback in real-time instead of buffering. Used by `runContainer` for real-time sentinel parsing.
 2. Export `DockerRuntime` class implementing `ContainerRuntime`:
    - Uses `config.CONTAINER_RUNTIME` (default `'docker'`) as the binary
    - All methods spawn the runtime binary with appropriate arguments
@@ -116,7 +118,7 @@ interface IpcCommand {
 
 1. Export `buildImage()` — builds the Docker image from `container/Dockerfile`:
    - Uses `docker build -t ${CONTAINER_IMAGE} -f container/Dockerfile .` (builds from project root with container/ Dockerfile)
-2. Export `runContainer(groupFolder, input: ContainerInput, containerConfig?)` that:
+2. Export `runContainer(groupFolder, input: ContainerInput, containerConfig?, onOutput?)` that:
    - Sends `ContainerInput` JSON on stdin (NOT plain text prompt)
    - Container naming: `mdclaw-${groupFolder}-${Date.now()}` with `--label mdclaw=true`
    - Constructs Docker run command with proper volume mounts
@@ -125,8 +127,10 @@ interface IpcCommand {
    - Mounts `data/global/CLAUDE.md` read-only at `/data/global/CLAUDE.md` for non-main groups
    - Mounts per-group Claude settings: `data/sessions/${group}/.claude` at `/home/node/.claude`
    - Passes secrets via stdin as part of `ContainerInput` JSON
-   - Parse sentinel markers in real-time (streaming) with `onOutput` callback
-   - Reset idle timeout on each output marker detected
+   - **Uses `runtime.runStreaming()` (not `runtime.run()`)** to parse sentinel markers in real-time
+   - Maintains a `stdoutBuffer` string, appends each chunk, and scans for complete sentinel blocks
+   - When a complete `OUTPUT_START_MARKER...OUTPUT_END_MARKER` block is found, extracts content and calls `onOutput(content)`
+   - This ensures output is delivered to the channel immediately as the agent produces it, not after the container exits
    - Sets container timeout from config or containerConfig override
    - Returns `ContainerResult`
 3. Export `parseContainerOutput(raw: string)` that:
